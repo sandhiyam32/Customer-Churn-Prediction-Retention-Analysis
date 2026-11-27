@@ -1,0 +1,174 @@
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+
+
+PROJECT_DIR = Path(__file__).resolve().parent
+DATA_PATH = PROJECT_DIR / "cleaned_telco.csv"
+MODEL_PATH = PROJECT_DIR / "model_comparison.csv"
+VISUALS_DIR = PROJECT_DIR / "eda_visualizations"
+
+st.set_page_config(
+    page_title="Telco Churn Dashboard",
+    page_icon="📊",
+    layout="wide",
+)
+
+st.markdown(
+    """
+    <style>
+    .block-container { padding-top: 2rem; padding-bottom: 3rem; }
+    [data-testid="stMetric"] {
+        background: #f5f7fb;
+        border: 1px solid #e8ebf2;
+        padding: 1rem;
+        border-radius: 0.75rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+@st.cache_data(show_spinner=False)
+def load_customer_data() -> pd.DataFrame:
+    if not DATA_PATH.is_file():
+        raise FileNotFoundError(f"Customer data not found: {DATA_PATH}")
+    return pd.read_csv(DATA_PATH)
+
+
+@st.cache_data(show_spinner=False)
+def load_model_results() -> pd.DataFrame:
+    if not MODEL_PATH.is_file():
+        raise FileNotFoundError(f"Model results not found: {MODEL_PATH}")
+    return pd.read_csv(MODEL_PATH)
+
+
+customers = load_customer_data()
+model_results = load_model_results()
+
+st.sidebar.title("Churn analysis")
+st.sidebar.caption("Telco customer retention dashboard")
+page = st.sidebar.radio(
+    "Navigate",
+    ["Overview", "Customer explorer", "Model performance", "EDA visuals"],
+)
+
+st.sidebar.divider()
+st.sidebar.subheader("Filter customers")
+contract_options = sorted(customers["Contract"].dropna().unique().tolist())
+internet_options = sorted(customers["Internet Service"].dropna().unique().tolist())
+selected_contracts = st.sidebar.multiselect(
+    "Contract type",
+    contract_options,
+    default=contract_options,
+)
+selected_internet = st.sidebar.multiselect(
+    "Internet service",
+    internet_options,
+    default=internet_options,
+)
+
+filtered = customers[
+    customers["Contract"].isin(selected_contracts)
+    & customers["Internet Service"].isin(selected_internet)
+]
+
+st.title("Customer churn & retention")
+st.caption("Explore customer churn patterns, saved model results, and project visualizations.")
+
+if filtered.empty:
+    st.warning("No customers match these filters. Select at least one contract and internet type.")
+    st.stop()
+
+if page == "Overview":
+    churn_rate = filtered["Churn"].mean()
+    churned_count = int(filtered["Churn"].sum())
+    monthly_revenue = filtered["Monthly Charge"].sum()
+
+    metric_columns = st.columns(4)
+    metric_columns[0].metric("Customers", f"{len(filtered):,}")
+    metric_columns[1].metric("Churn rate", f"{churn_rate:.1%}")
+    metric_columns[2].metric("Churned customers", f"{churned_count:,}")
+    metric_columns[3].metric("Monthly charges", f"${monthly_revenue:,.0f}")
+
+    left, right = st.columns(2)
+    with left:
+        st.subheader("Churn rate by contract")
+        contract_rates = (
+            filtered.groupby("Contract", observed=True)["Churn"]
+            .mean()
+            .mul(100)
+            .rename("Churn rate (%)")
+        )
+        st.bar_chart(contract_rates)
+    with right:
+        st.subheader("Average tenure by churn status")
+        tenure = filtered.assign(
+            **{"Churn status": filtered["Churn"].map({0: "Stayed", 1: "Churned"})}
+        )
+        average_tenure = (
+            tenure.groupby("Churn status", observed=True)["Tenure in Months"]
+            .mean()
+            .rename("Average tenure (months)")
+        )
+        st.bar_chart(average_tenure)
+
+    st.subheader("Customer records")
+    st.dataframe(filtered.head(10), width="stretch", hide_index=True)
+
+elif page == "Customer explorer":
+    st.subheader(f"Filtered customers ({len(filtered):,})")
+    st.write("Review the prepared customer dataset or download the filtered records.")
+    st.download_button(
+        "Download filtered data",
+        data=filtered.to_csv(index=False).encode("utf-8"),
+        file_name="filtered_telco_customers.csv",
+        mime="text/csv",
+    )
+    st.dataframe(filtered, width="stretch", hide_index=True)
+
+elif page == "Model performance":
+    st.subheader("Model comparison")
+    st.write("Metrics are from the project's held-out test-set evaluation.")
+    metric_columns = ["Accuracy", "Precision", "Recall", "F1-score"]
+    display_results = model_results.copy()
+    display_results[metric_columns] = display_results[metric_columns].mul(100)
+    st.dataframe(
+        display_results,
+        width="stretch",
+        hide_index=True,
+        column_config={
+            column: st.column_config.NumberColumn(format="%.1f%%")
+            for column in metric_columns
+        },
+    )
+    st.bar_chart(display_results.set_index("Algorithm")[metric_columns])
+    st.caption(
+        "The current model comparison uses all prepared records and is shown as saved; "
+        "the sidebar filters apply to customer analysis only."
+    )
+
+else:
+    st.subheader("Exploratory data analysis")
+    st.write("Charts generated by the project's EDA notebook.")
+    visualizations = [
+        ("01_churn_count.png", "Customer churn count"),
+        ("02_gender_vs_churn.png", "Gender vs churn"),
+        ("03_contract_vs_churn.png", "Contract type vs churn"),
+        ("04_tenure_distribution.png", "Tenure distribution by churn"),
+        ("05_monthly_charges_vs_churn.png", "Monthly charges vs churn"),
+        ("06_internet_service_vs_churn.png", "Internet service vs churn"),
+        ("07_correlation_heatmap.png", "Numerical feature correlation heatmap"),
+    ]
+    for start in range(0, len(visualizations), 2):
+        columns = st.columns(2)
+        for column, (filename, caption) in zip(
+            columns, visualizations[start : start + 2]
+        ):
+            image_path = VISUALS_DIR / filename
+            if not image_path.is_file():
+                st.error(f"Visualization not found: {image_path}")
+                continue
+            column.image(str(image_path), caption=caption, width="stretch")
